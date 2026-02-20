@@ -1,5 +1,5 @@
-// Simulating a developer accidentally committing credentials
-// This is a FAKE secret used only to test that Kingfisher catches it
+// App configuration
+// THIS FILE IS FOR TESTING KINGFISHER SECRET DETECTION ONLY
 
 const config = {
   db: {
@@ -7,8 +7,8 @@ const config = {
     port: 5432,
   },
   aws: {
-    accessKeyId: "AKIAIOSFODNN7EXAMPLE",
-    secretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    accessKeyId: "AKIAQWERTYUIOPLKJHGF",
+    secretAccessKey: "J0Hn5m1tH/K7FAKE9KEY/bPxRfiCYREALLOOKING",
     region: "us-east-1",
   },
 };
