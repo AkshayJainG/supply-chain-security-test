@@ -151,12 +151,12 @@ jobs:
       - name: generate SBOM from pushed image digest (not local copy)
         run: |
           # Pull by digest to guarantee SBOM describes the exact image that was signed
+          # --ignorefile: CLI equivalent of trivy-action's trivyignores parameter
           trivy image \
             --format spdx-json \
             --output sbom.spdx.json \
-            --trivyignores .trivyignore \
+            --ignorefile .trivyignore \
             "$SIGNED_IMAGE@$IMAGE_DIGEST"
-          # Record the digest in the SBOM for traceability
           echo "SBOM covers: $SIGNED_IMAGE@$IMAGE_DIGEST"
 
       - name: cosign attest SBOM
