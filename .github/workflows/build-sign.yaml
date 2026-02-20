@@ -17,8 +17,6 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3
-        with:
-          persist-credentials: false
 
       - name: enable containerd image store (required by copa for mergeop/diffop)
         run: |
@@ -120,53 +118,60 @@ jobs:
         run: |
           REPO_LC="${GITHUB_REPOSITORY,,}"
           SHORT_SHA="${GITHUB_SHA:0:8}"
-          IMAGE_SHA="ghcr.io/$REPO_LC:sha-$SHORT_SHA"
+          IMAGE_TAG="ghcr.io/$REPO_LC:sha-$SHORT_SHA"
           IMAGE_LATEST="ghcr.io/$REPO_LC:latest"
           docker pull localhost:5000/app:patched
-          docker tag localhost:5000/app:patched "$IMAGE_SHA"
+          docker tag localhost:5000/app:patched "$IMAGE_TAG"
           docker tag localhost:5000/app:patched "$IMAGE_LATEST"
-          docker push "$IMAGE_SHA"
+          docker push "$IMAGE_TAG"
           docker push "$IMAGE_LATEST"
-          # Capture the digest of exactly what was pushed — used for cosign + SBOM
-          PUSHED_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE_SHA" \
+          # Capture digest of exactly what was pushed
+          PUSHED_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE_TAG" \
             | cut -d@ -f2)
-          echo "SIGNED_IMAGE=$IMAGE_SHA" >> "$GITHUB_ENV"
+          # Digest-pinned reference — cosign/trivy must use this, never the mutable tag.
+          # Signing a tag is unsafe: the tag can be overwritten to point to a different image
+          # while the signature still appears to cover it.
+          IMAGE_BY_DIGEST="ghcr.io/$REPO_LC@$PUSHED_DIGEST"
+          echo "IMAGE_TAG=$IMAGE_TAG" >> "$GITHUB_ENV"
           echo "IMAGE_DIGEST=$PUSHED_DIGEST" >> "$GITHUB_ENV"
-          echo "Pushed: $IMAGE_SHA@$PUSHED_DIGEST"
+          echo "IMAGE_BY_DIGEST=$IMAGE_BY_DIGEST" >> "$GITHUB_ENV"
+          echo "Pushed tag:    $IMAGE_TAG"
+          echo "Pushed digest: $IMAGE_BY_DIGEST"
 
-      # ── cosign: sign + verify ─────────────────────────────────────────────────
+      # ── cosign: sign + verify (always by digest — never by tag) ──────────────
       - name: install cosign
         uses: sigstore/cosign-installer@1aa8e0f2454b781fbf0fbf306a4c9533a0c57409 # v3.7.0
 
       - name: cosign sign (keyless via GitHub OIDC)
-        run: cosign sign --yes "$SIGNED_IMAGE"
+        run: |
+          # Sign by digest: IMAGE_BY_DIGEST = ghcr.io/repo@sha256:abc...
+          # This binds the signature to a specific immutable image content, not a mutable tag.
+          cosign sign --yes "$IMAGE_BY_DIGEST"
 
       - name: cosign verify — confirm signature is valid before proceeding
         run: |
-          cosign verify "$SIGNED_IMAGE" \
+          cosign verify "$IMAGE_BY_DIGEST" \
             --certificate-identity-regexp="https://github.com/$GITHUB_REPOSITORY/.github/workflows/build-sign.yaml" \
             --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
             | python3 -m json.tool | head -20
-          echo "Signature verified OK"
+          echo "Signature verified OK for $IMAGE_BY_DIGEST"
 
       # ── SBOM: generate from the exact pushed digest, then attest ─────────────
       - name: generate SBOM from pushed image digest (not local copy)
         run: |
-          # Pull by digest to guarantee SBOM describes the exact image that was signed
-          # --ignorefile: CLI equivalent of trivy-action's trivyignores parameter
           trivy image \
             --format spdx-json \
             --output sbom.spdx.json \
             --ignorefile .trivyignore \
-            "$SIGNED_IMAGE@$IMAGE_DIGEST"
-          echo "SBOM covers: $SIGNED_IMAGE@$IMAGE_DIGEST"
+            "$IMAGE_BY_DIGEST"
+          echo "SBOM covers: $IMAGE_BY_DIGEST"
 
       - name: cosign attest SBOM
         run: |
           cosign attest --yes \
             --predicate sbom.spdx.json \
             --type spdxjson \
-            "$SIGNED_IMAGE"
+            "$IMAGE_BY_DIGEST"
 
       # ── SLSA provenance via GitHub native attestation ─────────────────────────
       # actions/attest-build-provenance generates SLSA v1.0 provenance — not hand-rolled.
@@ -189,8 +194,9 @@ jobs:
           echo "| Trivy scan (os+lib) | Ran |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Copa patch | Applied / up-to-date |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Library CVEs gated by .trivyignore | ✅ |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| cosign signed + verified | \`$SIGNED_IMAGE\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| cosign signed + verified (by digest) | ✅ |" >> "$GITHUB_STEP_SUMMARY"
           echo "| SBOM generated from pushed digest | ✅ |" >> "$GITHUB_STEP_SUMMARY"
           echo "| SLSA provenance (actions/attest) | ✅ |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Image: \`$SIGNED_IMAGE@$IMAGE_DIGEST\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Tag:    \`$IMAGE_TAG\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Digest: \`$IMAGE_BY_DIGEST\`" >> "$GITHUB_STEP_SUMMARY"
