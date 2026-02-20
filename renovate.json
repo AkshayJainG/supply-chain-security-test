@@ -1,0 +1,57 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "schedule": ["every weekend"],
+  "timezone": "UTC",
+
+  "pinDigests": true,
+
+  "packageRules": [
+    {
+      "description": "Group all GitHub Actions digest updates — one PR per week",
+      "matchManagers": ["github-actions"],
+      "groupName": "GitHub Actions digests",
+      "automerge": false
+    },
+    {
+      "description": "Group Dockerfile base-image digest updates",
+      "matchManagers": ["dockerfile"],
+      "groupName": "Docker base image digests",
+      "automerge": false
+    },
+    {
+      "description": "Auto-merge npm patch-level updates (low risk)",
+      "matchManagers": ["npm"],
+      "matchUpdateTypes": ["patch"],
+      "automerge": true,
+      "automergeType": "pr"
+    },
+    {
+      "description": "Group npm minor/major updates for manual review",
+      "matchManagers": ["npm"],
+      "matchUpdateTypes": ["minor", "major"],
+      "groupName": "npm dependencies",
+      "automerge": false
+    }
+  ],
+
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["security"]
+  },
+
+  "osvVulnerabilityAlerts": true,
+
+  "prCreation": "immediate",
+  "prHourlyLimit": 4,
+  "prConcurrentLimit": 10,
+
+  "labels": ["dependencies", "renovate"],
+
+  "commitMessagePrefix": "chore(deps):",
+
+  "ignorePaths": [
+    "**/node_modules/**",
+    "**/.trivyignore"
+  ]
+}

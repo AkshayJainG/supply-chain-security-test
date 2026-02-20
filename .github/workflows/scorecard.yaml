@@ -1,0 +1,47 @@
+name: "OpenSSF Scorecard"
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # Run every Monday at 08:00 UTC — weekly health check
+    - cron: "0 8 * * 1"
+  # Allow manual trigger for on-demand scoring
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  scorecard:
+    name: scorecard analysis
+    runs-on: ubuntu-latest
+    permissions:
+      # Needed to upload SARIF results to the Security tab
+      security-events: write
+      # Needed for scorecard to read repo contents, branch protection, etc.
+      contents: read
+      # Needed for keyless cosign signing of the scorecard results
+      id-token: write
+      # Needed to read GitHub Actions workflow files
+      actions: read
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3
+        with:
+          persist-credentials: false
+
+      - name: run OpenSSF Scorecard
+        uses: ossf/scorecard-action@ea651e62978af7915d09fe2e282747c798bf2dab # v2.4.1
+        with:
+          results_file: scorecard-results.sarif
+          results_format: sarif
+          # Publish results publicly to https://scorecard.dev/viewer/?uri=github.com/org/repo
+          # Remove this line if the repo is private
+          publish_results: true
+
+      - name: upload SARIF results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@9e8d0789d4a0fa9cde6b447ef8f2414897839c76 # v3.28.9
+        with:
+          sarif_file: scorecard-results.sarif
+          wait-for-processing: true
