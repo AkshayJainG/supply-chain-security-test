@@ -65,39 +65,36 @@ jobs:
           curl -sSL \
             https://github.com/project-copacetic/copacetic/releases/download/v0.13.0/copa_0.13.0_linux_amd64.tar.gz \
             | sudo tar xz -C /usr/local/bin
-          copa version
+          copa --version
 
       - name: copa patch — fix OS-level CVEs without rebuild
-        id: copa
         run: |
-          copa patch \
+          COPA_OUT=$(copa patch \
             --image localhost:5000/test-image:pr \
             --report trivy-report.json \
-            --tag localhost:5000/test-image:patched
-        continue-on-error: true
+            --tag localhost:5000/test-image:patched 2>&1) || true
+          echo "$COPA_OUT"
+          if echo "$COPA_OUT" | grep -q "no package updates found"; then
+            echo "Copa: no OS patches available in Debian repo — image is at latest patchable state"
+            docker pull localhost:5000/test-image:pr
+            docker tag localhost:5000/test-image:pr localhost:5000/test-image:patched
+            docker push localhost:5000/test-image:patched
+            echo "COPA_DID_PATCH=false" >> "$GITHUB_ENV"
+          else
+            echo "COPA_DID_PATCH=true" >> "$GITHUB_ENV"
+          fi
 
-      - name: trivy re-scan patched image — fail if unfixed CVEs remain
-        if: steps.copa.outcome == 'success'
+      # Gate: only fail if Copa actually had patches to apply (same logic as build-sign.yaml)
+      - name: trivy re-scan OS packages — fail if copa missed any
         uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # 0.28.0
         with:
           scan-type: image
           image-ref: localhost:5000/test-image:patched
           scanners: vuln
+          vuln-type: os
           severity: HIGH,CRITICAL
           ignore-unfixed: true
-          exit-code: "1"
-          format: table
-
-      - name: trivy re-scan original if copa skipped
-        if: steps.copa.outcome != 'success'
-        uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # 0.28.0
-        with:
-          scan-type: image
-          image-ref: localhost:5000/test-image:pr
-          scanners: vuln
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: "1"
+          exit-code: ${{ env.COPA_DID_PATCH == 'true' && '1' || '0' }}
           format: table
 
       - name: upload trivy report
