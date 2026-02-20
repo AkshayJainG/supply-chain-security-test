@@ -24,9 +24,11 @@ jobs:
 
       - name: start buildkitd
         run: |
-          sudo apt-get install -y buildkit -q
+          curl -sSL \
+            https://github.com/moby/buildkit/releases/download/v0.17.3/buildkit-v0.17.3.linux-amd64.tar.gz \
+            | sudo tar xz -C /usr/local/
           sudo buildkitd &
-          sleep 3
+          sleep 5
           sudo buildctl debug workers && echo "buildkitd is ready"
 
       - name: login to ghcr
