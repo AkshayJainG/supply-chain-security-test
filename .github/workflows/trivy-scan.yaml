@@ -30,11 +30,9 @@ jobs:
           sudo buildctl debug workers && echo "buildkitd is ready"
 
       - name: build image and push to local registry
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
-        with:
-          context: .
-          push: true
-          tags: localhost:5000/test-image:pr
+        run: |
+          docker build -t localhost:5000/test-image:pr .
+          docker push localhost:5000/test-image:pr
 
       - name: trivy scan — generate json report for copa
         uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # 0.28.0
