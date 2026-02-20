@@ -1,0 +1,118 @@
+name: "Build, Patch, Sign"
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build-patch-sign:
+    name: build + copa + cosign
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write   # required for keyless cosign OIDC signing
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3
+
+      - name: set up buildx (required by copa)
+        id: buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: login to ghcr
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: build image (do not push yet — scan first)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: app:pre-patch
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: trivy scan — generate json report for copa
+        uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # 0.28.0
+        with:
+          scan-type: image
+          image-ref: app:pre-patch
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "0"
+          format: json
+          output: trivy-report.json
+
+      - name: install copa v0.13.0
+        run: |
+          curl -sSL \
+            https://github.com/project-copacetic/copacetic/releases/download/v0.13.0/copa_0.13.0_linux_amd64.tar.gz \
+            | tar xz -C /usr/local/bin
+
+      - name: copa patch — fix OS-level CVEs in-place
+        env:
+          BUILDX_ADDR: ${{ steps.buildx.outputs.endpoint }}
+        run: |
+          copa patch \
+            --image app:pre-patch \
+            --report trivy-report.json \
+            --tag app:patched \
+            --addr "$BUILDX_ADDR"
+
+      - name: trivy re-scan patched image — fail if unfixed CVEs remain
+        uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # 0.28.0
+        with:
+          scan-type: image
+          image-ref: app:patched
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+
+      - name: tag and push patched image
+        run: |
+          IMAGE="ghcr.io/$GITHUB_REPOSITORY:sha-$GITHUB_SHA"
+          IMAGE_LATEST="ghcr.io/$GITHUB_REPOSITORY:latest"
+          docker tag app:patched "$IMAGE"
+          docker tag app:patched "$IMAGE_LATEST"
+          docker push "$IMAGE"
+          docker push "$IMAGE_LATEST"
+          echo "SIGNED_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: install cosign
+        uses: sigstore/cosign-installer@1aa8e0f2454b781fbf0fbf306a4c9533a0c57409 # v3.7.0
+
+      - name: cosign sign image (keyless via GitHub OIDC — no long-lived key needed)
+        run: |
+          cosign sign --yes "$SIGNED_IMAGE"
+          echo "Signed: $SIGNED_IMAGE"
+          echo "Verify later with:"
+          echo "  cosign verify $SIGNED_IMAGE \\"
+          echo "    --certificate-identity-regexp='https://github.com/$GITHUB_REPOSITORY' \\"
+          echo "    --certificate-oidc-issuer='https://token.actions.githubusercontent.com'"
+
+      - name: generate SBOM and attach as cosign attestation
+        run: |
+          trivy image --format spdx-json --output sbom.spdx.json app:patched
+          cosign attest --yes \
+            --predicate sbom.spdx.json \
+            --type spdxjson \
+            "$SIGNED_IMAGE"
+
+      - name: job summary
+        run: |
+          echo "### Supply Chain Security Complete" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Step | Status |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Trivy scan | Ran |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Copa patch | Applied |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Trivy re-scan | Passed |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| cosign signed | \`$SIGNED_IMAGE\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| SBOM attested | Attached |" >> "$GITHUB_STEP_SUMMARY"
