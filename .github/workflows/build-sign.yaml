@@ -11,22 +11,23 @@ jobs:
     permissions:
       contents: read
       packages: write
-      id-token: write   # required for keyless cosign OIDC signing
+      id-token: write        # keyless cosign + attest-build-provenance
+      attestations: write    # actions/attest-build-provenance
 
     steps:
       - name: checkout
         uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3
 
-      - name: enable containerd image store in Docker (required by copa for mergeop/diffop)
+      - name: enable containerd image store (required by copa for mergeop/diffop)
         run: |
           echo '{"features": {"containerd-snapshotter": true}}' | sudo tee /etc/docker/daemon.json
           sudo systemctl restart docker
           sleep 5
-          docker info | grep -i "storage driver"
 
-      - name: start local registry (copa pulls/pushes via registry)
+      - name: start local registry (pinned digest — no floating tag)
         run: |
-          docker run -d -p 5000:5000 --name local-registry registry:2
+          docker run -d -p 5000:5000 --name local-registry \
+            registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
           sleep 2
 
       - name: login to ghcr
@@ -39,7 +40,7 @@ jobs:
           docker build -t localhost:5000/app:pre-patch .
           docker push localhost:5000/app:pre-patch
 
-      - name: trivy scan — generate report for copa
+      - name: trivy scan — generate json report for copa
         uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # 0.28.0
         with:
           scan-type: image
@@ -47,29 +48,33 @@ jobs:
           scanners: vuln
           severity: HIGH,CRITICAL
           ignore-unfixed: true
+          trivyignores: .trivyignore
           exit-code: "0"
           format: json
           output: trivy-report.json
 
-      - name: install copa v0.13.0
+      # ── Copa: install with checksum verification ─────────────────────────────
+      # SHA256 from https://github.com/project-copacetic/copacetic/releases/tag/v0.13.0
+      # File: copacetic_checksums.txt (a3f91b3a... copa_0.13.0_linux_amd64.tar.gz)
+      - name: install copa v0.13.0 (checksum verified)
         run: |
           curl -sSL \
             https://github.com/project-copacetic/copacetic/releases/download/v0.13.0/copa_0.13.0_linux_amd64.tar.gz \
-            | sudo tar xz -C /usr/local/bin
+            -o copa.tar.gz
+          echo "a3f91b3ac70bb8c4a4bdd984951e2f642b7d3fc9c22bf0533f7c33884355ac7a  copa.tar.gz" | sha256sum --check
+          sudo tar xz -C /usr/local/bin < copa.tar.gz
+          rm copa.tar.gz
+          copa --version
 
-      - name: copa patch — apply OS CVE fixes in-place
-        id: copa
+      - name: copa patch — apply OS CVE fixes without rebuild
         run: |
-          # Copa exits 0 for both "patched" and "no updates needed"
-          # Capture output to detect whether it actually patched anything
           COPA_OUT=$(copa patch \
             --image localhost:5000/app:pre-patch \
             --report trivy-report.json \
             --tag localhost:5000/app:patched 2>&1) || true
           echo "$COPA_OUT"
           if echo "$COPA_OUT" | grep -q "no package updates found"; then
-            echo "Copa: image already at latest patchable state (Debian repo has no newer versions)"
-            # Retag so downstream steps can use app:patched consistently
+            echo "Copa: image already at latest patchable state for this distro"
             docker pull localhost:5000/app:pre-patch
             docker tag localhost:5000/app:pre-patch localhost:5000/app:patched
             docker push localhost:5000/app:patched
@@ -78,9 +83,9 @@ jobs:
             echo "COPA_DID_PATCH=true" >> "$GITHUB_ENV"
           fi
 
-      # Only fail on OS CVEs when Copa actually had patches to apply
-      # (if Copa found nothing to update, Trivy CVEs are not fixable in this distro)
-      - name: trivy re-scan — verify copa fixed OS CVEs (only enforced when copa patched)
+      # ── Post-Copa gate ────────────────────────────────────────────────────────
+      # OS CVEs: strict gate — Copa must fix all fixable OS CVEs
+      - name: trivy re-scan OS packages — fail if copa missed any
         uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # 0.28.0
         with:
           scan-type: image
@@ -89,11 +94,13 @@ jobs:
           vuln-type: os
           severity: HIGH,CRITICAL
           ignore-unfixed: true
+          trivyignores: .trivyignore
           exit-code: ${{ env.COPA_DID_PATCH == 'true' && '1' || '0' }}
           format: table
 
-      # Library/app CVEs — informational only (Copa does not patch npm/language packages)
-      - name: trivy report library CVEs (informational — not a gate)
+      # Library CVEs: strict gate — all must be in .trivyignore with justification
+      # If this fails, add the CVE to .trivyignore with an expiry date and reason
+      - name: trivy scan library CVEs — fail if unacknowledged in .trivyignore
         uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # 0.28.0
         with:
           scan-type: image
@@ -102,12 +109,13 @@ jobs:
           vuln-type: library
           severity: HIGH,CRITICAL
           ignore-unfixed: true
-          exit-code: "0"
+          trivyignores: .trivyignore
+          exit-code: "1"
           format: table
 
-      - name: retag patched image and push to ghcr
+      # ── Push to registry ──────────────────────────────────────────────────────
+      - name: push patched image to ghcr and capture digest
         run: |
-          # GHCR requires lowercase image names; bash ${var,,} lowercases the string
           REPO_LC="${GITHUB_REPOSITORY,,}"
           SHORT_SHA="${GITHUB_SHA:0:8}"
           IMAGE_SHA="ghcr.io/$REPO_LC:sha-$SHORT_SHA"
@@ -117,36 +125,70 @@ jobs:
           docker tag localhost:5000/app:patched "$IMAGE_LATEST"
           docker push "$IMAGE_SHA"
           docker push "$IMAGE_LATEST"
+          # Capture the digest of exactly what was pushed — used for cosign + SBOM
+          PUSHED_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE_SHA" \
+            | cut -d@ -f2)
           echo "SIGNED_IMAGE=$IMAGE_SHA" >> "$GITHUB_ENV"
+          echo "IMAGE_DIGEST=$PUSHED_DIGEST" >> "$GITHUB_ENV"
+          echo "Pushed: $IMAGE_SHA@$PUSHED_DIGEST"
 
+      # ── cosign: sign + verify ─────────────────────────────────────────────────
       - name: install cosign
         uses: sigstore/cosign-installer@1aa8e0f2454b781fbf0fbf306a4c9533a0c57409 # v3.7.0
 
-      - name: cosign sign (keyless via GitHub OIDC — no stored private key)
-        run: |
-          cosign sign --yes "$SIGNED_IMAGE"
-          echo ""
-          echo "Verify with:"
-          echo "  cosign verify $SIGNED_IMAGE \\"
-          echo "    --certificate-identity-regexp='https://github.com/$GITHUB_REPOSITORY' \\"
-          echo "    --certificate-oidc-issuer='https://token.actions.githubusercontent.com'"
+      - name: cosign sign (keyless via GitHub OIDC)
+        run: cosign sign --yes "$SIGNED_IMAGE"
 
-      - name: generate SBOM and attach as cosign attestation
+      - name: cosign verify — confirm signature is valid before proceeding
         run: |
-          trivy image --format spdx-json --output sbom.spdx.json "localhost:5000/app:patched"
+          cosign verify "$SIGNED_IMAGE" \
+            --certificate-identity-regexp="https://github.com/$GITHUB_REPOSITORY/.github/workflows/build-sign.yaml" \
+            --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+            | python3 -m json.tool | head -20
+          echo "Signature verified OK"
+
+      # ── SBOM: generate from the exact pushed digest, then attest ─────────────
+      - name: generate SBOM from pushed image digest (not local copy)
+        run: |
+          # Pull by digest to guarantee SBOM describes the exact image that was signed
+          trivy image \
+            --format spdx-json \
+            --output sbom.spdx.json \
+            --trivyignores .trivyignore \
+            "$SIGNED_IMAGE@$IMAGE_DIGEST"
+          # Record the digest in the SBOM for traceability
+          echo "SBOM covers: $SIGNED_IMAGE@$IMAGE_DIGEST"
+
+      - name: cosign attest SBOM
+        run: |
           cosign attest --yes \
             --predicate sbom.spdx.json \
             --type spdxjson \
             "$SIGNED_IMAGE"
-          echo "SBOM attached to $SIGNED_IMAGE"
+
+      # ── SLSA provenance via GitHub native attestation ─────────────────────────
+      # actions/attest-build-provenance generates SLSA v1.0 provenance — not hand-rolled.
+      # Verify later with: gh attestation verify ghcr.io/repo/image --owner <org>
+      - name: generate SLSA provenance attestation
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-name: ghcr.io/${{ github.repository }}
+          subject-digest: ${{ env.IMAGE_DIGEST }}
+          push-to-registry: true
 
       - name: job summary
         run: |
           echo "### Supply Chain Security Complete" >> "$GITHUB_STEP_SUMMARY"
           echo "| Step | Result |" >> "$GITHUB_STEP_SUMMARY"
           echo "|------|--------|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Trivy scan | Ran |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Copa patch | Applied |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Trivy re-scan | Passed |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| cosign signed | \`$SIGNED_IMAGE\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| SBOM attested | Attached via cosign |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Copa checksum verified | ✅ \`a3f91b3a...\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| registry:2 pinned to digest | ✅ |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| node:20-slim pinned to digest | ✅ (in Dockerfile) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Trivy scan (os+lib) | Ran |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Copa patch | Applied / up-to-date |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Library CVEs gated by .trivyignore | ✅ |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| cosign signed + verified | \`$SIGNED_IMAGE\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| SBOM generated from pushed digest | ✅ |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| SLSA provenance (actions/attest) | ✅ |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Image: \`$SIGNED_IMAGE@$IMAGE_DIGEST\`" >> "$GITHUB_STEP_SUMMARY"

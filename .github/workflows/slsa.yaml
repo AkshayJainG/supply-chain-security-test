@@ -1,82 +1,50 @@
-name: "SLSA Provenance"
+name: "SLSA Provenance (Release)"
+
+# This workflow generates SLSA provenance for release tarballs.
+# Container image provenance is handled inline in build-sign.yaml via
+# actions/attest-build-provenance which produces SLSA v1.0.
+#
+# Verify with: gh attestation verify <artifact> --owner AkshayJainG
 
 on:
   release:
     types: [published]
 
 jobs:
-  provenance:
-    name: build + sign provenance
+  release-provenance:
+    name: build + attest release artifact
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      id-token: write   # required for keyless cosign signing
+      id-token: write
+      attestations: write
 
     steps:
-      - name: checkout
+      - name: checkout at release tag
         uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3
+        with:
+          fetch-depth: 0
 
       - name: build release artifact
         run: |
-          tar czf release.tar.gz --exclude='.git' .
+          tar czf release.tar.gz --exclude='.git' --exclude='.github' .
           sha256sum release.tar.gz > checksums.txt
           cat checksums.txt
 
-      - name: install cosign
-        uses: sigstore/cosign-installer@1aa8e0f2454b781fbf0fbf306a4c9533a0c57409 # v3.7.0
-
-      - name: generate and sign SLSA provenance
-        run: |
-          DIGEST=$(sha256sum release.tar.gz | cut -d' ' -f1)
-          BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-
-          # Write SLSA v0.2 provenance predicate
-          cat > provenance.json << PROVEOF
-          {
-            "_type": "https://in-toto.io/Statement/v0.1",
-            "subject": [{
-              "name": "release.tar.gz",
-              "digest": { "sha256": "${DIGEST}" }
-            }],
-            "predicateType": "https://slsa.dev/provenance/v0.2",
-            "predicate": {
-              "builder": {
-                "id": "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/slsa.yaml"
-              },
-              "buildType": "https://github.com/actions/runner",
-              "invocation": {
-                "configSource": {
-                  "uri": "git+https://github.com/${GITHUB_REPOSITORY}@${GITHUB_REF}",
-                  "digest": { "sha1": "${GITHUB_SHA}" },
-                  "entryPoint": ".github/workflows/slsa.yaml"
-                }
-              },
-              "metadata": {
-                "buildStartedOn": "${BUILD_TIME}",
-                "completeness": {
-                  "parameters": false,
-                  "environment": false,
-                  "materials": false
-                },
-                "reproducible": false
-              }
-            }
-          }
-          PROVEOF
-
-          # Sign the provenance with cosign (keyless — no stored private key)
-          cosign attest-blob --yes \
-            --predicate provenance.json \
-            --type slsaprovenance \
-            release.tar.gz
-
-          echo "Provenance signed for digest: $DIGEST"
+      - name: generate SLSA provenance for release tarball
+        id: attest
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: release.tar.gz
 
       - name: upload release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
         run: |
           gh release upload "$GITHUB_REF_NAME" \
             release.tar.gz \
-            checksums.txt \
-            provenance.json
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            checksums.txt
+          echo "Provenance bundle: $BUNDLE_PATH"
+          echo ""
+          echo "Verify with: gh attestation verify release.tar.gz --owner AkshayJainG"

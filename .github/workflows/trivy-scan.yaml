@@ -15,16 +15,16 @@ jobs:
       - name: checkout
         uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3
 
-      - name: enable containerd image store in Docker (required by copa for mergeop/diffop)
+      - name: enable containerd image store (required by copa for mergeop/diffop)
         run: |
           echo '{"features": {"containerd-snapshotter": true}}' | sudo tee /etc/docker/daemon.json
           sudo systemctl restart docker
           sleep 5
-          docker info | grep -i "storage driver"
 
-      - name: start local registry (copa pulls/pushes via registry)
+      - name: start local registry (pinned digest — no floating tag)
         run: |
-          docker run -d -p 5000:5000 --name local-registry registry:2
+          docker run -d -p 5000:5000 --name local-registry \
+            registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
           sleep 2
 
       - name: build image and push to local registry
@@ -40,13 +40,14 @@ jobs:
           scanners: vuln
           severity: HIGH,CRITICAL
           ignore-unfixed: true
+          trivyignores: .trivyignore
           exit-code: "0"
           format: json
           output: trivy-report.json
 
       - name: show CVE summary
         run: |
-          echo "=== Fixable CVEs (HIGH/CRITICAL) ==="
+          echo "=== Fixable CVEs (HIGH/CRITICAL, not in .trivyignore) ==="
           python3 - <<'EOF'
           import json
           with open("trivy-report.json") as f:
@@ -57,14 +58,18 @@ jobs:
                   if vuln.get("FixedVersion"):
                       print(f"  {vuln['VulnerabilityID']} | {vuln['PkgName']} {vuln['InstalledVersion']} -> {vuln['FixedVersion']} | {vuln['Severity']}")
                       total += 1
-          print(f"\nTotal fixable: {total}")
+          print(f"\nTotal: {total}")
           EOF
 
-      - name: install copa v0.13.0
+      # ── Copa: install with checksum verification ─────────────────────────────
+      - name: install copa v0.13.0 (checksum verified)
         run: |
           curl -sSL \
             https://github.com/project-copacetic/copacetic/releases/download/v0.13.0/copa_0.13.0_linux_amd64.tar.gz \
-            | sudo tar xz -C /usr/local/bin
+            -o copa.tar.gz
+          echo "a3f91b3ac70bb8c4a4bdd984951e2f642b7d3fc9c22bf0533f7c33884355ac7a  copa.tar.gz" | sha256sum --check
+          sudo tar xz -C /usr/local/bin < copa.tar.gz
+          rm copa.tar.gz
           copa --version
 
       - name: copa patch — fix OS-level CVEs without rebuild
@@ -75,7 +80,7 @@ jobs:
             --tag localhost:5000/test-image:patched 2>&1) || true
           echo "$COPA_OUT"
           if echo "$COPA_OUT" | grep -q "no package updates found"; then
-            echo "Copa: no OS patches available in Debian repo — image is at latest patchable state"
+            echo "Copa: no OS patches available — image is at latest patchable state for this distro"
             docker pull localhost:5000/test-image:pr
             docker tag localhost:5000/test-image:pr localhost:5000/test-image:patched
             docker push localhost:5000/test-image:patched
@@ -84,7 +89,7 @@ jobs:
             echo "COPA_DID_PATCH=true" >> "$GITHUB_ENV"
           fi
 
-      # Gate: only fail if Copa actually had patches to apply (same logic as build-sign.yaml)
+      # OS CVEs: gate enforced when copa had patches to apply
       - name: trivy re-scan OS packages — fail if copa missed any
         uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # 0.28.0
         with:
@@ -94,7 +99,23 @@ jobs:
           vuln-type: os
           severity: HIGH,CRITICAL
           ignore-unfixed: true
+          trivyignores: .trivyignore
           exit-code: ${{ env.COPA_DID_PATCH == 'true' && '1' || '0' }}
+          format: table
+
+      # Library CVEs: strict gate — ALL must be acknowledged in .trivyignore
+      # This enforces explicit sign-off for every known non-fixable library CVE
+      - name: trivy scan library CVEs — fail if unacknowledged in .trivyignore
+        uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # 0.28.0
+        with:
+          scan-type: image
+          image-ref: localhost:5000/test-image:patched
+          scanners: vuln
+          vuln-type: library
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+          exit-code: "1"
           format: table
 
       - name: upload trivy report

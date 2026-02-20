@@ -1,0 +1,72 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://github.com/AkshayJainG/supply-chain-security-test/vex/2026-02-20",
+  "author": "AkshayJainG",
+  "timestamp": "2026-02-20T00:00:00Z",
+  "version": 1,
+  "statements": [
+    {
+      "vulnerability": { "@id": "https://www.cve.org/CVERecord?id=CVE-2024-21538" },
+      "products": [
+        { "@id": "pkg:npm/cross-spawn@7.0.3" }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "cross-spawn is bundled inside npm which ships with node:20-slim. The production container entrypoint is 'node index.js' — npm is never invoked at runtime. No user-controlled strings reach cross-spawn's spawn() function."
+    },
+    {
+      "vulnerability": { "@id": "https://www.cve.org/CVERecord?id=CVE-2025-64756" },
+      "products": [
+        { "@id": "pkg:npm/glob@10.4.2" }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "glob is bundled inside npm. npm is not invoked at runtime. No attacker-controlled glob patterns are processed in the production container."
+    },
+    {
+      "vulnerability": { "@id": "https://www.cve.org/CVERecord?id=CVE-2026-26996" },
+      "products": [
+        { "@id": "pkg:npm/minimatch@9.0.5" }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "minimatch is bundled inside npm. npm is not invoked at runtime. No attacker-controlled patterns are processed."
+    },
+    {
+      "vulnerability": { "@id": "https://www.cve.org/CVERecord?id=CVE-2026-23745" },
+      "products": [
+        { "@id": "pkg:npm/tar@6.2.1" }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "node-tar is bundled inside npm for package installation. The production container runs 'node index.js' — npm tar extraction is never performed. No untrusted archives are extracted at runtime."
+    },
+    {
+      "vulnerability": { "@id": "https://www.cve.org/CVERecord?id=CVE-2026-23950" },
+      "products": [
+        { "@id": "pkg:npm/tar@6.2.1" }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Same as CVE-2026-23745. node-tar is only used by npm during package installation, which does not occur in the production container."
+    },
+    {
+      "vulnerability": { "@id": "https://www.cve.org/CVERecord?id=CVE-2026-24842" },
+      "products": [
+        { "@id": "pkg:npm/tar@6.2.1" }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Same as CVE-2026-23745."
+    },
+    {
+      "vulnerability": { "@id": "https://www.cve.org/CVERecord?id=CVE-2026-26960" },
+      "products": [
+        { "@id": "pkg:npm/tar@6.2.1" }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Same as CVE-2026-23745."
+    }
+  ]
+}

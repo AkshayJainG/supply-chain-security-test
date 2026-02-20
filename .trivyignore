@@ -1,0 +1,35 @@
+# Trivy ignore file — every entry MUST have a justification and expiry date.
+# When an entry expires, Trivy will start failing again until re-evaluated.
+# Format: CVE-ID exp:YYYY-MM-DD # reason
+#
+# Policy: entries older than 90 days MUST be re-reviewed and either:
+#   (a) removed because the runtime image was updated, or
+#   (b) renewed with fresh justification
+#
+# These CVEs are in npm's bundled packages (cross-spawn, glob, minimatch, tar).
+# They are part of the npm CLI tool shipped inside node:20-slim.
+# RUNTIME CONTEXT: The container entrypoint is `node index.js`.
+# npm is NOT invoked at runtime — it is a build/package-management tool only.
+# None of these packages are reachable via the application's code paths.
+#
+# All entries expire 2026-05-20. Re-evaluate when upgrading Node.js base image.
+
+# cross-spawn ReDoS — only exploitable if attacker controls spawn argument strings
+# via cross-spawn. npm is not invoked at runtime.
+CVE-2024-21538 exp:2026-05-20
+
+# glob command injection — only exploitable if attacker controls glob patterns
+# passed to the glob() function. npm is not invoked at runtime.
+CVE-2025-64756 exp:2026-05-20
+
+# minimatch ReDoS via repeated wildcards — requires attacker-controlled minimatch
+# patterns. npm is not invoked at runtime.
+CVE-2026-26996 exp:2026-05-20
+
+# node-tar: arbitrary file overwrite / symlink / path traversal — a chain of 4 CVEs
+# in node-tar 6.x (bundled with npm). npm is not invoked at runtime; tar extraction
+# from untrusted archives is not performed in the production container.
+CVE-2026-23745 exp:2026-05-20
+CVE-2026-23950 exp:2026-05-20
+CVE-2026-24842 exp:2026-05-20
+CVE-2026-26960 exp:2026-05-20
