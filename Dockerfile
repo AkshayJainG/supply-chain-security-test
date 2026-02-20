@@ -7,7 +7,8 @@ COPY package*.json ./
 
 # --ignore-scripts: prevents lifecycle scripts from running (supply chain risk)
 # --omit=dev: no devDependencies in the image
-RUN npm ci --ignore-scripts --omit=dev 2>/dev/null; exit 0
+# mkdir -p ensures node_modules exists even when there are zero dependencies
+RUN npm ci --ignore-scripts --omit=dev 2>/dev/null; mkdir -p node_modules
 
 # ── Stage 2: runtime (no network access — hermetic) ────────────────────────────
 FROM node:20-slim@sha256:c6585df72c34172bebd8d36abed961e231d7d3b5cee2e01294c4495e8a03f687 AS final
