@@ -1,5 +1,6 @@
-# Using node:18.18.0 intentionally — known to have CVEs for Trivy/Copa to catch
-FROM node:18.18.0-slim
+# node:20-slim (current LTS) — fewer CVEs than 18.x
+# Copa handles any remaining OS-level CVEs in the pipeline
+FROM node:20-slim
 
 WORKDIR /app
 
